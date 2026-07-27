@@ -1052,8 +1052,11 @@ function render(){
     if(els.remote.value !== '' && String(+j.remote) !== els.remote.value) return false;
     if(els.source.value && j.source !== els.source.value) return false;
     if(els.size.value && j.size !== els.size.value) return false;
-    // Age filter: job must be newer than selected days
-    if((j.days_open || 0) > maxAge) return false;
+    // Age filter: job must be newer than selected days (reject unknown ages too)
+    if(maxAge < Infinity){
+      const days = j.days_open || 0;
+      if(days < 0 || days > maxAge) return false;
+    }
     // salary filter: parse "$X–$Y" format
     if(j.salary && (salMin > 0 || salMax < Infinity)){
       const m = j.salary.match(/\$(\d+,?\d*)/g);

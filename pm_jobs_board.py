@@ -231,8 +231,214 @@ def is_target_role(title: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 3. Salary extraction from description text (best effort)
+# 3b. US-Only Filtering
 # ---------------------------------------------------------------------------
+US_STATES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+    "DC", "PR", "VI",
+]
+
+US_STATE_NAMES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut",
+    "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa",
+    "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan",
+    "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire",
+    "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio",
+    "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia",
+    "Wisconsin", "Wyoming", "District of Columbia",
+]
+
+NON_US_INDICATORS = [
+    "UK", "United Kingdom", "England", "Scotland", "London", "Manchester",
+    "EU", "Europe", "Germany", "Berlin", "France", "Paris", "Netherlands", "Amsterdam",
+    "Canada", "Toronto", "Vancouver", "Mexico", "Australia", "Sydney", "Melbourne",
+    "Japan", "Tokyo", "India", "Bangalore", "Delhi", "Singapore", "Hong Kong",
+    "China", "Shanghai", "Beijing", "Brazil", "São Paulo",
+]
+
+
+def is_us_location(location: str) -> bool:
+    """Check if a job location is in the US."""
+    if not location:
+        return False
+    
+    location_upper = location.upper()
+    
+    # Check for non-US indicators first
+    for indicator in NON_US_INDICATORS:
+        if indicator.upper() in location_upper:
+            return False
+    
+    # Check for "Remote - US" or "Remote, US" (must have US indicator)
+    if "REMOTE" in location_upper:
+        if "US" in location_upper or "USA" in location_upper:
+            return True
+        else:
+            return False  # Bare "Remote" without US indicator: reject
+    
+    # Check for US states (abbreviations and full names)
+    for state in US_STATES:
+        if state in location_upper:
+            return True
+    for state_name in US_STATE_NAMES:
+        if state_name.upper() in location_upper:
+            return True
+    
+    # Check for major US cities
+    us_cities = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia",
+                 "San Antonio", "San Diego", "Dallas", "San Jose", "Austin", "Jacksonville",
+                 "Miami", "Boston", "Seattle", "Denver", "Portland", "Las Vegas"]
+    for city in us_cities:
+        if city.upper() in location_upper:
+            return True
+    
+    return False
+
+
+def is_likely_us_company(company_slug: str) -> bool:
+    """Simple heuristic: is this likely a US-based company? (Most of our list is US-based)"""
+    # For now, allow all since our hardcoded list is mostly US companies
+    # If we add international companies later, we can filter here
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 3c. Auto-Discovery (find company boards automatically)
+# ---------------------------------------------------------------------------
+def get_company_list():
+    """Get a list of company slugs to probe. Combines known tech companies + public sources."""
+    # Hardcoded list of known tech companies (YC, funded startups, public tech)
+    known_companies = [
+        # YC famous companies
+        "airbnb", "stripe", "dropbox", "instacart", "doordash", "reddit", "figma",
+        "slack", "notion", "retool", "openai", "anthropic", "vercel", "replit",
+        "cursor", "supabase", "linear", "cal", "clerk", "vanta", "ramp",
+        # Other well-known funded startups
+        "databricks", "databricks", "huggingface", "hugging-face", "mistral",
+        "cohere", "scale", "scaleai", "brex", "chime", "gusto", "mercury",
+        "coinbase", "kraken", "nexo", "blockchain", "consensys",
+        # Infrastructure/Dev tools
+        "hashicorp", "terraform", "vault", "consul", "nomad",
+        "elastic", "mongodb", "redis", "postgres", "mysql",
+        # Enterprise SaaS
+        "asana", "monday", "airtable", "zapier", "intercom", "amplitude",
+        "mixpanel", "segment", "twilio", "sendgrid", "cloudflare",
+        # AI/ML
+        "together", "lambdalabs", "modal", "runwayml", "midjourney",
+        # Security/Risk
+        "socure", "sardine", "sift", "unit21", "alloy",
+        # Payments/Fintech
+        "affirm", "robinhood", "wealthfront", "betterment", "acorns",
+        # Marketplace
+        "shopify", "etsy", "pinterest", "lyft", "uber", "grab",
+        # Health/Wellness  
+        "ro", "ro-health", "teladoc", "hims", "nurx",
+    ]
+    
+    # Try to fetch from public sources
+    additional = []
+    
+    # Try GitHub trending (simple scrape of top repos)
+    try:
+        url = "https://api.github.com/search/repositories?q=language:python+stars:>10000&sort=stars&per_page=100"
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for repo in data.get("items", []):
+                org = repo.get("owner", {}).get("login", "").lower()
+                if org and len(org) > 2:
+                    additional.append(org)
+    except Exception:
+        pass
+    
+    # Combine and dedupe
+    all_companies = list(set(known_companies + additional))
+    all_companies = [c for c in all_companies if c]  # Remove empty strings
+    
+    return all_companies
+
+
+def probe_company(company_slug: str) -> list:
+    """Probe a company across all ATS platforms. Return list of working boards."""
+    working = []
+    
+    # Try each ATS pattern
+    patterns = [
+        ("greenhouse", f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs?content=true"),
+        ("lever", f"https://api.lever.co/v0/postings/{company_slug}?mode=json"),
+        ("ashby", f"https://api.ashbyhq.com/posting-api/job-board/{company_slug}?includeCompensation=true"),
+        ("workable", f"https://www.workable.com/api/accounts/{company_slug}?details=true"),
+        ("recruitee", f"https://{company_slug}.recruitee.com/api/offers/"),
+    ]
+    
+    for ats_name, url in patterns:
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                # Check if we got jobs/data back (not empty)
+                if isinstance(data, list):
+                    if len(data) > 0:
+                        working.append((ats_name, company_slug))
+                elif isinstance(data, dict):
+                    if data.get("jobs") or data.get("postings") or data.get("offers"):
+                        working.append((ats_name, company_slug))
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                pass  # Other errors are timeouts/network; skip
+        except Exception:
+            pass  # Timeout, DNS, etc. — skip this company
+        
+        time.sleep(0.1)  # Be polite
+    
+    return working
+
+
+def discover_companies(max_companies: int = 5000) -> dict:
+    """Auto-discover company boards. Return dict of ATS -> list of company slugs."""
+    print("Discovering company boards...")
+    
+    # Fetch company list
+    print("  Fetching company list...")
+    companies = get_company_list()
+    print(f"  Found {len(companies)} companies to probe")
+    
+    # Limit to max for speed
+    companies_to_probe = companies[:max_companies]
+    
+    discovered = {
+        "greenhouse": [],
+        "lever": [],
+        "ashby": [],
+        "workable": [],
+        "recruitee": [],
+    }
+    
+    print(f"  Probing {len(companies_to_probe)} companies across 5 ATS platforms...")
+    for i, company_slug in enumerate(companies_to_probe):
+        if (i + 1) % 100 == 0:
+            print(f"    Progress: {i + 1}/{len(companies_to_probe)}")
+        
+        working_boards = probe_company(company_slug)
+        for ats_name, slug in working_boards:
+            if slug not in discovered[ats_name]:
+                discovered[ats_name].append(slug)
+    
+    # Summary
+    total_found = sum(len(v) for v in discovered.values())
+    print(f"  Discovery complete: found {total_found} working boards")
+    for ats_name, slugs in discovered.items():
+        if slugs:
+            print(f"    {ats_name}: {len(slugs)}")
+    
+    return discovered
+
+
 SAL_RANGE_RE = re.compile(
     r"\$\s?([\d,]+(?:\.\d+)?)\s*([kK])?\s*(?:-|–|—|&#8211;|to)\s*\$?\s?"
     r"([\d,]+(?:\.\d+)?)\s*([kK])?"
@@ -284,6 +490,9 @@ def fetch_greenhouse(token: str):
             continue
         posted = j.get("first_published") or j.get("updated_at") or ""
         loc = ((j.get("location") or {}).get("name") or "").strip()
+        # Filter US jobs only
+        if not is_us_location(loc):
+            continue
         jobs.append({
             "title": title.strip(),
             "company": (j.get("company_name") or token).strip(),
@@ -295,7 +504,7 @@ def fetch_greenhouse(token: str):
             "url": j.get("absolute_url", ""),
             "description": html_mod.unescape((j.get("content") or "")[:500]),
             "functions": get_job_functions(title),
-            "functions": get_job_functions(title), "source": "greenhouse",
+            "source": "greenhouse",
         })
     return jobs
 
@@ -328,6 +537,9 @@ def fetch_lever(site: str):
             ).isoformat()
         wt = (p.get("workplaceType") or "").lower()
         loc = (cats.get("location") or "").strip()
+        # Filter US jobs only
+        if not is_us_location(loc):
+            continue
         jobs.append({
             "title": title.strip(),
             "company": site.capitalize(),
@@ -353,6 +565,9 @@ def fetch_ashby(name: str):
         if not is_target_role(title):
             continue
         loc = (j.get("location") or "").strip()
+        # Filter US jobs only
+        if not is_us_location(loc):
+            continue
         comp = ""
         c = j.get("compensation") or {}
         if isinstance(c, dict):
@@ -386,6 +601,9 @@ def fetch_workable(sub: str):
         if isinstance(loc, dict):
             loc = ", ".join(str(v) for v in (loc.get("city"), loc.get("country")) if v)
         loc = (loc or "").strip() if isinstance(loc, str) else ""
+        # Filter US jobs only
+        if not is_us_location(loc):
+            continue
         jobs.append({
             "title": title.strip(),
             "company": company,
@@ -411,6 +629,9 @@ def fetch_recruitee(sub: str):
         if not is_target_role(title):
             continue
         loc = (j.get("location") or "").strip()
+        # Filter US jobs only
+        if not is_us_location(loc):
+            continue
         jobs.append({
             "title": title.strip(),
             "company": (j.get("company_name") or sub).strip(),
@@ -424,6 +645,100 @@ def fetch_recruitee(sub: str):
             "functions": get_job_functions(title), "source": "recruitee",
         })
     return jobs
+
+
+# ---------------------------------------------------------------------------
+# 5b. Verification (run before deployment)
+# ---------------------------------------------------------------------------
+def verify_build():
+    """Sanity checks to catch bugs before deployment."""
+    checks = {}
+    
+    # 1. Role functions defined and have patterns
+    try:
+        assert len(ROLE_FUNCTIONS) >= 2, "at least 2 role functions"
+        for func_name, patterns in ROLE_FUNCTIONS.items():
+            assert "include" in patterns and len(patterns["include"]) > 0, f"{func_name} has includes"
+            assert "exclude" in patterns, f"{func_name} has excludes"
+        checks["ROLE_FUNCTIONS structure"] = True
+    except AssertionError as e:
+        checks["ROLE_FUNCTIONS structure"] = str(e)
+    
+    # 2. Core functions exist and work
+    try:
+        result = get_job_functions("Product Manager")
+        assert len(result) > 0, "get_job_functions returns results"
+        checks["get_job_functions"] = True
+    except Exception as e:
+        checks["get_job_functions"] = str(e)
+    
+    try:
+        assert is_target_role("Senior Product Manager"), "is_target_role finds PM"
+        assert is_target_role("People Partner"), "is_target_role finds People Partner"
+        assert not is_target_role("Random Garbage Title"), "is_target_role rejects non-matches"
+        checks["is_target_role"] = True
+    except AssertionError as e:
+        checks["is_target_role"] = str(e)
+    
+    try:
+        level = classify_level("Senior Product Manager")
+        assert level in ["Senior PM", "PM"], f"classify_level returns valid level: {level}"
+        checks["classify_level"] = True
+    except Exception as e:
+        checks["classify_level"] = str(e)
+    
+    try:
+        sal = extract_salary("salary is $100,000 to $150,000 per year")
+        assert "$" in sal and "–" in sal, f"extract_salary parses ranges: {sal}"
+        checks["extract_salary"] = True
+    except Exception as e:
+        checks["extract_salary"] = str(e)
+    
+    # 3. Tag keywords and days open work
+    try:
+        j = {"title": "PM, Fraud", "description": "risk platform", "posted": "2026-07-20T00:00:00Z"}
+        assert len(tag_keywords(j)) > 0, "tag_keywords finds matches"
+        assert has_days_open(j) >= 0, "has_days_open calculates days"
+        checks["tag_keywords & has_days_open"] = True
+    except Exception as e:
+        checks["tag_keywords & has_days_open"] = str(e)
+    
+    # 4. Template has required elements
+    try:
+        dummy_html = render_html([], [], {})
+        assert 'id="jobFunction"' in dummy_html, "jobFunction dropdown in HTML"
+        assert 'id="salMin"' in dummy_html, "salary filters in HTML"
+        assert 'selectedFunc' in dummy_html, "function filtering logic in page"
+        checks["HTML template"] = True
+    except Exception as e:
+        checks["HTML template"] = str(e)
+    
+    # 5. Critical functions exist and are callable
+    try:
+        assert callable(run), "run() defined"
+        assert callable(render_html), "render_html() defined"
+        checks["Critical functions"] = True
+    except (NameError, AssertionError, TypeError) as e:
+        checks["Critical functions"] = str(e)
+    
+    # Report
+    print("Verification Report:")
+    print("=" * 50)
+    passed = sum(1 for v in checks.values() if v is True)
+    failed = {k: v for k, v in checks.items() if v is not True}
+    
+    for check_name, result in checks.items():
+        status = "✓" if result is True else "✗"
+        detail = "" if result is True else f" ({result})"
+        print(f"{status} {check_name}{detail}")
+    
+    print("=" * 50)
+    if failed:
+        print(f"FAILED: {len(failed)} check(s) failed. Do not deploy.")
+        return False
+    else:
+        print(f"SUCCESS: All {len(checks)} checks passed. Safe to deploy.")
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +839,7 @@ def render_html(jobs, trending, company_counts) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PM Market — __COUNT__ open roles</title>
+<title>Job Market — __COUNT__ open roles</title>
 <style>
   :root{
     --paper:#f7f6f2; --ink:#16211c; --dim:#5c6a63; --line:#dcd9cf;
@@ -595,7 +910,7 @@ def render_html(jobs, trending, company_counts) -> str:
 <body>
 <div class="wrap">
   <header>
-    <h1>PM Market <span class="tick">▲</span></h1>
+    <h1>Job Market <span class="tick">▲</span></h1>
     <div class="meta">updated <span id="genTime" data-iso="__GENERATED_ISO__">__GENERATED__</span> · refreshes daily ~7:00 AM PT · greenhouse + lever + ashby public APIs</div>
     <div class="tape">
       <div class="up"><b id="statFresh">0</b>new in 24h</div>
@@ -605,7 +920,7 @@ def render_html(jobs, trending, company_counts) -> str:
     </div>
   </header>
   <div class="filters">
-    <select id="function" aria-label="Role function"><option value="">All roles</option></select>
+    <select id="jobFunction" aria-label="Role function"><option value="">All roles</option></select>
     <input id="q" type="search" placeholder="Search title, company, location" aria-label="Search">
     <select id="view" aria-label="View">
       <option value="all">All roles</option>
@@ -622,6 +937,7 @@ def render_html(jobs, trending, company_counts) -> str:
     <select id="size" aria-label="Company size"><option value="">All sizes</option></select>
     <input id="salMin" type="number" placeholder="Min $" min="0" step="5000" aria-label="Minimum salary">
     <input id="salMax" type="number" placeholder="Max $" min="0" step="5000" aria-label="Maximum salary">
+    <select id="age" aria-label="Job age"><option value="">Any age</option><option value="14">Posted in last 14d</option><option value="30">Posted in last 30d</option><option value="60">Posted in last 60d</option></select>
   </div>
   <div id="trending" class="trending"></div>
   <div id="list"></div>
@@ -629,7 +945,7 @@ def render_html(jobs, trending, company_counts) -> str:
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
-const els = { q:q, view:view, function:els_function, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, list:list, trending:trending };
+const els = { q:q, view:view, jobFunction:jobFunction, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, age:age, list:list, trending:trending };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();
 
@@ -669,14 +985,48 @@ const allFunctions = new Set();
 JOBS.forEach(j => (j.functions||[]).forEach(f => allFunctions.add(f)));
 [...allFunctions].sort().forEach(f => {
   const o = document.createElement('option');
-  o.value = f; o.textContent = f;
-  els_function.append(o);
+  const count = JOBS.filter(j => (j.functions||[]).includes(f)).length;
+  o.value = f; o.textContent = `${f} (${count})`;
+  jobFunction.append(o);
 });
 
-/* --- render trending companies widget --- */
+/* --- restore function choice from localStorage --- */
+const savedFunction = store.get('pmb_selectedFunction', '');
+if(savedFunction) els.jobFunction.value = savedFunction;
+
+/* --- dynamic dropdown updates when function changes --- */
+function updateDropdownsForFunction() {
+  const selectedFunc = els.jobFunction.value;
+  const jobsInFunc = selectedFunc ? JOBS.filter(j => (j.functions||[]).includes(selectedFunc)) : JOBS;
+  
+  // Rebuild level, source, size dropdowns with only values in this function
+  els.level.innerHTML = '<option value="">All levels</option>';
+  fill(els.level, jobsInFunc.map(j => j.level));
+  
+  els.source.innerHTML = '<option value="">All sources</option>';
+  fill(els.source, jobsInFunc.map(j => j.source));
+  
+  els.size.innerHTML = '<option value="">All sizes</option>';
+  fill(els.size, jobsInFunc.map(j => j.size));
+  
+  // Reset search and salary filters when switching functions
+  els.q.value = '';
+  els.salMin.value = '';
+  els.salMax.value = '';
+  
+  // Save function choice
+  store.set('pmb_selectedFunction', selectedFunc);
+  
+  render();
+}
+
+els.jobFunction.addEventListener('change', updateDropdownsForFunction);
+
+/* --- render trending companies widget with tooltip --- */
 const TRENDING = __TRENDING__;
 if(TRENDING.length > 0){
-  const html = '<div class="stat-card"><div class="stat-title">Trending</div><div class="stat-rows">' +
+  const funcLabel = els.jobFunction.value ? ` in ${els.jobFunction.value}` : '';
+  const html = '<div class="stat-card"><div class="stat-title" title="Companies with most open roles' + funcLabel + '">Trending</div><div class="stat-rows">' +
     TRENDING.map(([co, cnt]) => `<div class="stat-row"><span class="co">${esc(co)}</span><span class="cnt">${cnt}</span></div>`).join('') +
     '</div></div>';
   els.trending.innerHTML = html;
@@ -685,9 +1035,10 @@ if(TRENDING.length > 0){
 function render(){
   const q = els.q.value.toLowerCase().trim();
   const mode = els.view.value;
-  const selectedFunc = els_function.value;  // "" = all, or specific function name
+  const selectedFunc = els.jobFunction.value;
   const salMin = els.salMin.value ? parseInt(els.salMin.value) : 0;
   const salMax = els.salMax.value ? parseInt(els.salMax.value) : Infinity;
+  const maxAge = els.age.value ? parseInt(els.age.value) : Infinity;  // days
   
   let rows = JOBS.map((j,i)=>({j,i})).filter(({j}) => {
     if(mode === 'hidden') { if(!hidden.has(j.url)) return false; }
@@ -695,13 +1046,14 @@ function render(){
     if(mode === 'saved'    && !saved.has(j.url)) return false;
     if(mode === 'priority' && (j.keywords||[]).length === 0) return false;
     if(mode === 'new'      && !isNew(j)) return false;
-    // Function filter: if selected, job must match the function
     if(selectedFunc && !(j.functions||[]).includes(selectedFunc)) return false;
     if(q && !(j.title + ' ' + j.company + ' ' + j.location).toLowerCase().includes(q)) return false;
     if(els.level.value && j.level !== els.level.value) return false;
     if(els.remote.value !== '' && String(+j.remote) !== els.remote.value) return false;
     if(els.source.value && j.source !== els.source.value) return false;
     if(els.size.value && j.size !== els.size.value) return false;
+    // Age filter: job must be newer than selected days
+    if((j.days_open || 0) > maxAge) return false;
     // salary filter: parse "$X–$Y" format
     if(j.salary && (salMin > 0 || salMax < Infinity)){
       const m = j.salary.match(/\$(\d+,?\d*)/g);
@@ -721,7 +1073,7 @@ function render(){
     const isStale = daysOpen >= 90;
     const kwBadges = (j.keywords||[]).map(k => `<span class="badge key">${esc(k)}</span>`).join('');
     return `<div class="job ${(j.keywords||[]).length > 0?'has-keywords':''}">
-      <span class="when ${a.fresh?'fresh':''}" title="${daysOpen >= 0 ? daysOpen + ' days open' : 'date unknown'}">${a.fresh?'● ':''}${a.label}${isStale?' ⚠':''}}</span>
+      <span class="when ${a.fresh?'fresh':''}" title="${daysOpen >= 0 ? daysOpen + ' days open' : 'date unknown'}">${a.fresh?'● ':''}${a.label}${isStale?' ⚠':''}</span>
       <span class="main">
         <a href="${esc(j.url)}" target="_blank" rel="noopener" title="${esc(j.description_preview)}">${esc(j.title)}</a>
         ${isNew(j)?'<span class="badge new">new</span>':''}
@@ -792,7 +1144,7 @@ setInterval(tickCountdown, 1000);
 /* --- header stats --- */
 statTotal.textContent = JOBS.filter(j=>!hidden.has(j.url)).length;
 statFresh.textContent = JOBS.filter(j=>age(j.posted).fresh && !hidden.has(j.url)).length;
-[els.q, els.view, els.function, els.level, els.remote, els.source, els.size, els.salMin, els.salMax].forEach(el => el.addEventListener('input', render));
+[els.q, els.view, els.jobFunction, els.level, els.remote, els.source, els.size, els.salMin, els.salMax, els.age].forEach(el => el.addEventListener('input', render));
 render();
 </script>
 </body>
@@ -807,5 +1159,21 @@ render();
 
 
 if __name__ == "__main__":
-    print("PM Jobs Board — fetching public ATS boards...\n")
+    if not verify_build():
+        sys.exit(1)
+    
+    # Check for discovery mode
+    if "--discover" in sys.argv:
+        print("\nAuto-Discovery Mode — finding company boards...\n")
+        discovered = discover_companies(max_companies=5000)
+        # Print results as Python dict for copy-paste into SEED_COMPANIES
+        print("\nDiscovered boards (paste into SEED_COMPANIES):")
+        print("SEED_COMPANIES = {")
+        for ats_name, slugs in discovered.items():
+            if slugs:
+                print(f'    "{ats_name}": {slugs},')
+        print("}")
+        sys.exit(0)
+    
+    print("\nPM Jobs Board — fetching public ATS boards...\n")
     run()

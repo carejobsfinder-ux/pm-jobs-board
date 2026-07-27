@@ -1,0 +1,100 @@
+name: Auto-Discover Company Boards
+
+on:
+  schedule:
+    - cron: "30 6 * * *"              # Every day at 6:30 AM PT (before fetch at 7 AM)
+      timezone: "America/Los_Angeles"
+  workflow_dispatch:                  # Manual trigger via GitHub UI
+
+permissions:
+  contents: write
+  pages: read
+  id-token: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Run auto-discovery
+        run: python pm_jobs_board.py --discover > discovery_output.txt 2>&1
+        continue-on-error: true  # Don't fail the workflow if discovery times out
+      
+      - name: Extract SEED_COMPANIES from output
+        run: |
+          python3 << 'EOF'
+          import re
+          
+          try:
+              with open('discovery_output.txt', 'r') as f:
+                  output = f.read()
+              
+              # Extract the SEED_COMPANIES dict from output
+              match = re.search(r'(SEED_COMPANIES = \{[\s\S]*?\n\})', output)
+              if match:
+                  seed_dict = match.group(1)
+                  print("Found SEED_COMPANIES in output:")
+                  print(seed_dict)
+                  
+                  # Write to a temp file for the next step
+                  with open('/tmp/new_seed.txt', 'w') as f:
+                      f.write(seed_dict)
+              else:
+                  print("Could not find SEED_COMPANIES in output")
+                  print("Output was:")
+                  print(output)
+          except Exception as e:
+              print(f"Error extracting SEED_COMPANIES: {e}")
+          EOF
+      
+      - name: Update pm_jobs_board.py with new SEED_COMPANIES
+        run: |
+          python3 << 'EOF'
+          import re
+          
+          try:
+              # Read the new seed companies
+              with open('/tmp/new_seed.txt', 'r') as f:
+                  new_seed = f.read()
+              
+              # Read the current file
+              with open('pm_jobs_board.py', 'r') as f:
+                  content = f.read()
+              
+              # Find and replace SEED_COMPANIES
+              pattern = r'SEED_COMPANIES = \{[^}]*(?:\{[^}]*\}[^}]*)*\}'
+              if re.search(pattern, content):
+                  updated = re.sub(pattern, new_seed, content)
+                  
+                  with open('pm_jobs_board.py', 'w') as f:
+                      f.write(updated)
+                  
+                  print("✓ Updated SEED_COMPANIES in pm_jobs_board.py")
+              else:
+                  print("Could not find SEED_COMPANIES pattern in file")
+          except Exception as e:
+              print(f"Error updating file: {e}")
+          EOF
+      
+      - name: Commit and push updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if there are changes
+          if git diff --quiet pm_jobs_board.py; then
+            echo "No changes to commit"
+          else
+            echo "Changes detected, committing..."
+            git add pm_jobs_board.py
+            git commit -m "auto: discover new company boards
+
+Discovered new working boards across Greenhouse, Lever, Ashby, Workable, and Recruitee.
+This is an automated commit from the discovery workflow."
+            git push origin main
+          fi

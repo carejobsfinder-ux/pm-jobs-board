@@ -945,6 +945,22 @@ def render_html(jobs, trending, company_counts) -> str:
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
+const q = document.getElementById('q');
+const view = document.getElementById('view');
+const jobFunction = document.getElementById('jobFunction');
+const level = document.getElementById('level');
+const remote = document.getElementById('remote');
+const source = document.getElementById('source');
+const size = document.getElementById('size');
+const salMin = document.getElementById('salMin');
+const salMax = document.getElementById('salMax');
+const age = document.getElementById('age');
+const list = document.getElementById('list');
+const trending = document.getElementById('trending');
+const statFresh = document.getElementById('statFresh');
+const statTotal = document.getElementById('statTotal');
+const statSaved = document.getElementById('statSaved');
+const statNext = document.getElementById('statNext');
 const els = { q:q, view:view, jobFunction:jobFunction, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, age:age, list:list, trending:trending };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();

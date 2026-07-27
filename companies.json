@@ -1,0 +1,19 @@
+{
+  "greenhouse": [
+    "scaleai", "anthropic", "reddit", "blockchain", "coinbase", "databricks", "airbnb", "dropbox", 
+    "chime", "figma", "robinhood", "affirm", "amplitude", "pinterest", "lyft", "vercel", "alloy", 
+    "betterment", "consensys", "elastic", "gusto", "stripe", "cloudflare", "brex", "instacart", 
+    "mongodb", "mixpanel", "intercom", "twilio", "asana", "mercury", "airtable"
+  ],
+  "lever": [
+    "alloy", "wealthfront", "ro"
+  ],
+  "ashby": [
+    "acorns", "localstack", "cursor", "zapier", "supabase", "amplitude", "midjourney", "cohere", 
+    "modal", "ramp", "vanta", "sift", "comfy-org", "redis", "replit", "socure", "linear", "notion", 
+    "sardine", "ultralytics", "nomad", "openhands", "openai"
+  ],
+  "workable": [
+    "1c7", "localstack", "huggingface", "pathwaycom"
+  ]
+}

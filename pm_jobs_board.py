@@ -38,7 +38,43 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 1. CONFIG — edit me.
 # ---------------------------------------------------------------------------
-# Keywords to highlight in job titles and descriptions (appears as a badge).
+# Role functions: add new ones here, no code changes needed.
+# Each function has include/exclude regex patterns to match job titles.
+# Jobs tagged with matching function(s); user selects which to view.
+ROLE_FUNCTIONS = {
+    "Product Manager": {
+        "include": [
+            r"product (manager|management|lead|owner)",
+            r"head of product",
+            r"\bapm\b",
+            r"associate product",
+        ],
+        "exclude": [
+            r"project manager",
+            r"product design",
+            r"product support",
+            r"product analyst",
+            r"product marketing",
+        ],
+    },
+    "People Partner": {
+        "include": [
+            r"people (partner|operations|manager|ops)",
+            r"recruiting",
+            r"talent (acquisition|manager)",
+            r"recruiter",
+            r"human resources",
+            r"HR (manager|specialist|operations)",
+            r"employee relations",
+            r"organizational development",
+        ],
+        "exclude": [
+            r"people success manager",
+        ],
+    },
+}
+
+# Keywords to highlight within the selected function (appears as a badge).
 KEYWORD_HIGHLIGHTER = ["risk", "fraud", "payments", "identity", "platform"]
 
 # Company size buckets for filtering (company name → employee count range).
@@ -171,8 +207,27 @@ def has_days_open(j: dict) -> int:
         return -1
 
 
-def is_pm_role(title: str) -> bool:
-    return bool(PM_INCLUDE.search(title)) and not PM_EXCLUDE.search(title)
+def get_job_functions(title: str) -> list:
+    """Return list of role functions this title matches."""
+    matching = []
+    for func_name, patterns in ROLE_FUNCTIONS.items():
+        include_patterns = [re.compile(p, re.I) for p in patterns.get("include", [])]
+        exclude_patterns = [re.compile(p, re.I) for p in patterns.get("exclude", [])]
+        
+        # Must match at least one include pattern
+        if not any(p.search(title) for p in include_patterns):
+            continue
+        # Must not match any exclude pattern
+        if any(p.search(title) for p in exclude_patterns):
+            continue
+        
+        matching.append(func_name)
+    return matching
+
+
+def is_target_role(title: str) -> bool:
+    """True if title matches any role function (no longer just PM)."""
+    return len(get_job_functions(title)) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +280,7 @@ def fetch_greenhouse(token: str):
     jobs = []
     for j in data.get("jobs", []):
         title = j.get("title", "") or ""
-        if not is_pm_role(title):
+        if not is_target_role(title):
             continue
         posted = j.get("first_published") or j.get("updated_at") or ""
         loc = ((j.get("location") or {}).get("name") or "").strip()
@@ -238,8 +293,9 @@ def fetch_greenhouse(token: str):
             "level": classify_level(title),
             "posted": posted,
             "url": j.get("absolute_url", ""),
-            "description": html_mod.unescape((j.get("content") or "")[:500]),  # first 500 chars
-            "source": "greenhouse",
+            "description": html_mod.unescape((j.get("content") or "")[:500]),
+            "functions": get_job_functions(title),
+            "functions": get_job_functions(title), "source": "greenhouse",
         })
     return jobs
 
@@ -261,7 +317,7 @@ def fetch_lever(site: str):
     jobs = []
     for p in data if isinstance(data, list) else []:
         title = p.get("text", "") or ""
-        if not is_pm_role(title):
+        if not is_target_role(title):
             continue
         cats = p.get("categories") or {}
         created_ms = p.get("createdAt")
@@ -282,7 +338,7 @@ def fetch_lever(site: str):
             "posted": posted,
             "url": p.get("hostedUrl", ""),
             "description": (p.get("text", "")[:500] if isinstance(p.get("text"), str) else ""),
-            "source": "lever",
+            "functions": get_job_functions(title), "source": "lever",
         })
     return jobs
 
@@ -294,7 +350,7 @@ def fetch_ashby(name: str):
     jobs = []
     for j in (data.get("jobs") or []):
         title = j.get("title", "") or ""
-        if not is_pm_role(title):
+        if not is_target_role(title):
             continue
         loc = (j.get("location") or "").strip()
         comp = ""
@@ -311,7 +367,7 @@ def fetch_ashby(name: str):
             "posted": j.get("publishedAt") or "",
             "url": j.get("jobUrl") or j.get("applyUrl") or "",
             "description": (j.get("descriptionRaw") or "")[:500] if isinstance(j.get("descriptionRaw"), str) else "",
-            "source": "ashby",
+            "functions": get_job_functions(title), "source": "ashby",
         })
     return jobs
 
@@ -324,7 +380,7 @@ def fetch_workable(sub: str):
     jobs = []
     for j in (data.get("jobs") or []):
         title = j.get("title", "") or ""
-        if not is_pm_role(title):
+        if not is_target_role(title):
             continue
         loc = j.get("location")
         if isinstance(loc, dict):
@@ -340,7 +396,7 @@ def fetch_workable(sub: str):
             "posted": j.get("published_on") or j.get("created_at") or "",
             "url": j.get("url", ""),
             "description": (j.get("description", "")[:500] if isinstance(j.get("description"), str) else ""),
-            "source": "workable",
+            "functions": get_job_functions(title), "source": "workable",
         })
     return jobs
 
@@ -352,7 +408,7 @@ def fetch_recruitee(sub: str):
     jobs = []
     for j in (data.get("offers") or []):
         title = j.get("title", "") or ""
-        if not is_pm_role(title):
+        if not is_target_role(title):
             continue
         loc = (j.get("location") or "").strip()
         jobs.append({
@@ -365,7 +421,7 @@ def fetch_recruitee(sub: str):
             "posted": j.get("published_at") or j.get("created_at") or "",
             "url": j.get("careers_url", ""),
             "description": (j.get("description", "")[:500] if isinstance(j.get("description"), str) else ""),
-            "source": "recruitee",
+            "functions": get_job_functions(title), "source": "recruitee",
         })
     return jobs
 
@@ -460,6 +516,9 @@ def render_html(jobs, trending, company_counts) -> str:
     generated_iso = now_utc.isoformat()
     payload = json.dumps(jobs).replace("</", "<\\/")
     trending_payload = json.dumps(trending).replace("</", "<\\/")
+    # Convert ROLE_FUNCTIONS to a simpler dict for JavaScript (just function names)
+    functions_list = list(ROLE_FUNCTIONS.keys())
+    functions_payload = json.dumps(functions_list).replace("</", "<\\/")
     template = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -546,6 +605,7 @@ def render_html(jobs, trending, company_counts) -> str:
     </div>
   </header>
   <div class="filters">
+    <select id="function" aria-label="Role function"><option value="">All roles</option></select>
     <input id="q" type="search" placeholder="Search title, company, location" aria-label="Search">
     <select id="view" aria-label="View">
       <option value="all">All roles</option>
@@ -569,7 +629,7 @@ def render_html(jobs, trending, company_counts) -> str:
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
-const els = { q:q, view:view, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, list:list, trending:trending };
+const els = { q:q, view:view, function:els_function, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, list:list, trending:trending };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();
 
@@ -604,6 +664,15 @@ fill(els.level, JOBS.map(j=>j.level));
 fill(els.source, JOBS.map(j=>j.source));
 fill(els.size, JOBS.map(j=>j.size));
 
+/* --- populate function dropdown from all unique functions in jobs --- */
+const allFunctions = new Set();
+JOBS.forEach(j => (j.functions||[]).forEach(f => allFunctions.add(f)));
+[...allFunctions].sort().forEach(f => {
+  const o = document.createElement('option');
+  o.value = f; o.textContent = f;
+  els_function.append(o);
+});
+
 /* --- render trending companies widget --- */
 const TRENDING = __TRENDING__;
 if(TRENDING.length > 0){
@@ -616,6 +685,7 @@ if(TRENDING.length > 0){
 function render(){
   const q = els.q.value.toLowerCase().trim();
   const mode = els.view.value;
+  const selectedFunc = els_function.value;  // "" = all, or specific function name
   const salMin = els.salMin.value ? parseInt(els.salMin.value) : 0;
   const salMax = els.salMax.value ? parseInt(els.salMax.value) : Infinity;
   
@@ -625,6 +695,8 @@ function render(){
     if(mode === 'saved'    && !saved.has(j.url)) return false;
     if(mode === 'priority' && (j.keywords||[]).length === 0) return false;
     if(mode === 'new'      && !isNew(j)) return false;
+    // Function filter: if selected, job must match the function
+    if(selectedFunc && !(j.functions||[]).includes(selectedFunc)) return false;
     if(q && !(j.title + ' ' + j.company + ' ' + j.location).toLowerCase().includes(q)) return false;
     if(els.level.value && j.level !== els.level.value) return false;
     if(els.remote.value !== '' && String(+j.remote) !== els.remote.value) return false;
@@ -720,7 +792,7 @@ setInterval(tickCountdown, 1000);
 /* --- header stats --- */
 statTotal.textContent = JOBS.filter(j=>!hidden.has(j.url)).length;
 statFresh.textContent = JOBS.filter(j=>age(j.posted).fresh && !hidden.has(j.url)).length;
-[els.q, els.view, els.level, els.remote, els.source, els.size, els.salMin, els.salMax].forEach(el => el.addEventListener('input', render));
+[els.q, els.view, els.function, els.level, els.remote, els.source, els.size, els.salMin, els.salMax].forEach(el => el.addEventListener('input', render));
 render();
 </script>
 </body>

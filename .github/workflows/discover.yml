@@ -82,6 +82,8 @@ jobs:
           EOF
       
       - name: Commit and push updates
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -98,3 +100,4 @@ Discovered new working boards across Greenhouse, Lever, Ashby, Workable, and Rec
 This is an automated commit from the discovery workflow."
             git push origin main
           fi
+        continue-on-error: true

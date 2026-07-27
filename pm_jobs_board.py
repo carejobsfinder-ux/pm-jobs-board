@@ -1003,10 +1003,6 @@ JOBS.forEach(j => (j.functions||[]).forEach(f => allFunctions.add(f)));
   jobFunction.append(o);
 });
 
-/* --- restore function choice from localStorage --- */
-const savedFunction = store.get('pmb_selectedFunction', '');
-if(savedFunction) els.jobFunction.value = savedFunction;
-
 /* --- dynamic dropdown updates when function changes --- */
 function updateDropdownsForFunction() {
   if (!els.jobFunction || !els.level || !els.source || !els.size) return;

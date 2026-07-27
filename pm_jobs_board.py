@@ -945,23 +945,20 @@ def render_html(jobs, trending, company_counts) -> str:
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
-const q = document.getElementById('q');
-const view = document.getElementById('view');
-const jobFunction = document.getElementById('jobFunction');
-const level = document.getElementById('level');
-const remote = document.getElementById('remote');
-const source = document.getElementById('source');
-const size = document.getElementById('size');
-const salMin = document.getElementById('salMin');
-const salMax = document.getElementById('salMax');
-const age = document.getElementById('age');
-const list = document.getElementById('list');
-const trending = document.getElementById('trending');
-const statFresh = document.getElementById('statFresh');
-const statTotal = document.getElementById('statTotal');
-const statSaved = document.getElementById('statSaved');
-const statNext = document.getElementById('statNext');
-const els = { q:q, view:view, jobFunction:jobFunction, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, age:age, list:list, trending:trending };
+const els = {
+  q: document.getElementById('q'),
+  view: document.getElementById('view'),
+  jobFunction: document.getElementById('jobFunction'),
+  level: document.getElementById('level'),
+  remote: document.getElementById('remote'),
+  source: document.getElementById('source'),
+  size: document.getElementById('size'),
+  salMin: document.getElementById('salMin'),
+  salMax: document.getElementById('salMax'),
+  age: document.getElementById('age'),
+  list: document.getElementById('list'),
+  trending: document.getElementById('trending')
+};
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();
 
@@ -1012,6 +1009,8 @@ if(savedFunction) els.jobFunction.value = savedFunction;
 
 /* --- dynamic dropdown updates when function changes --- */
 function updateDropdownsForFunction() {
+  if (!els.jobFunction || !els.level || !els.source || !els.size) return;
+  
   const selectedFunc = els.jobFunction.value;
   const jobsInFunc = selectedFunc ? JOBS.filter(j => (j.functions||[]).includes(selectedFunc)) : JOBS;
   
@@ -1026,9 +1025,9 @@ function updateDropdownsForFunction() {
   fill(els.size, jobsInFunc.map(j => j.size));
   
   // Reset search and salary filters when switching functions
-  els.q.value = '';
-  els.salMin.value = '';
-  els.salMax.value = '';
+  if(els.q) els.q.value = '';
+  if(els.salMin) els.salMin.value = '';
+  if(els.salMax) els.salMax.value = '';
   
   // Save function choice
   store.set('pmb_selectedFunction', selectedFunc);
@@ -1036,7 +1035,7 @@ function updateDropdownsForFunction() {
   render();
 }
 
-els.jobFunction.addEventListener('change', updateDropdownsForFunction);
+if(els.jobFunction) els.jobFunction.addEventListener('change', updateDropdownsForFunction);
 
 /* --- render trending companies widget with tooltip --- */
 const TRENDING = __TRENDING__;
@@ -1163,7 +1162,9 @@ setInterval(tickCountdown, 1000);
 /* --- header stats --- */
 statTotal.textContent = JOBS.filter(j=>!hidden.has(j.url)).length;
 statFresh.textContent = JOBS.filter(j=>age(j.posted).fresh && !hidden.has(j.url)).length;
-[els.q, els.view, els.jobFunction, els.level, els.remote, els.source, els.size, els.salMin, els.salMax, els.age].forEach(el => el.addEventListener('input', render));
+[els.q, els.view, els.jobFunction, els.level, els.remote, els.source, els.size, els.salMin, els.salMax, els.age].forEach(el => {
+  if(el) el.addEventListener('input', render);
+});
 render();
 </script>
 </body>

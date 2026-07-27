@@ -402,7 +402,7 @@ def render_html(jobs) -> str:
     </select>
     <select id="level" aria-label="Level"><option value="">All levels</option></select>
     <select id="remote" aria-label="Work mode">
-      <option value="">Any mode</option><option value="1">Remote</option><option value="0">On-site / hybrid</option>
+      <option value="">Any</option><option value="1">Remote</option><option value="0">On-site / hybrid</option>
     </select>
     <select id="source" aria-label="Source"><option value="">All sources</option></select>
   </div>

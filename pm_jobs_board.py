@@ -38,8 +38,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 1. CONFIG — edit me.
 # ---------------------------------------------------------------------------
-# Titles containing any of these pin to the top of the board with a tag.
-PRIORITY_KEYWORDS = ["risk", "fraud", "payments", "identity", "platform"]
+# Keywords to highlight in job titles and descriptions (appears as a badge).
+KEYWORD_HIGHLIGHTER = ["risk", "fraud", "payments", "identity", "platform"]
+
+# Company size buckets for filtering (company name → employee count range).
+COMPANY_SIZES = {
+    "stripe": "1000+", "coinbase": "1000+", "airbnb": "1000+", "instacart": "1000+",
+    "pinterest": "1000+", "lyft": "1000+", "reddit": "1000+", "discord": "1000+",
+    "figma": "1000+", "databricks": "1000+", "anthropic": "500-1000", "cloudflare": "1000+",
+    "dropbox": "1000+", "mongodb": "1000+", "gitlab": "1000+", "datadog": "1000+",
+    "asana": "1000+", "vercel": "100-500", "airtable": "100-500",
+    "cursor": "50-200", "replit": "50-200", "supabase": "100-500", "ramp": "50-200",
+    "openai": "100-500", "notion": "500-1000", "linear": "50-200", "sierra": "50-200",
+    "harvey": "50-200", "vanta": "100-500", "clerk": "50-200", "sardine": "50-200",
+    "socure": "100-500", "samsara": "1000+", "databricks": "500-1000", "anthropic": "100-500",
+}
 
 # Daily refresh time shown in the countdown (matches refresh.yml's schedule).
 REFRESH_HOUR_PT = 7  # 7:00 AM America/Los_Angeles
@@ -56,21 +69,45 @@ SEED_COMPANIES = {
         "figma", "databricks", "scaleai", "anthropic", "cloudflare",
         "dropbox", "airtable", "vercel",
         "gitlab", "datadog", "mongodb", "asana", "intercom", "amplitude",
+        # startup / risk-adjacent (verified working above; failed guesses removed)
+        "samsara",
     ],
     "lever": [
         "netflix", "palantir", "kraken", "voleon",
         "mistral", "spotify", "plaid",
+        # verified this session
+        "dnb", "Flex",
     ],
     "ashby": [
         "socure", "ramp", "openai", "notion", "linear", "deel",
+        # startup-heavy guesses (Ashby skews to newer high-growth startups);
+        # posthog is cited in Ashby's own docs — the run report confirms the rest
+        "posthog", "cursor", "replit", "supabase", "vanta", "clerk",
+        "elevenlabs", "sierra", "harvey", "cognition",
+        "browserbase", "sardine", "column",
+    ],
+    "workable": [
+        # SMB-leaning ATS; verified example board to smoke-test the integration.
+        # Replace/extend with companies you care about (subdomain from
+        # apply.workable.com/<subdomain>).
+        "epignosis",
+    ],
+    "recruitee": [
+        # SMB/EU-leaning ATS; verified example board to smoke-test the
+        # integration (subdomain from <subdomain>.recruitee.com).
+        "adamsmithinternational1",
     ],
 }
 
 GH_URL = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
 LEVER_URL = "https://api.lever.co/v0/postings/{site}?mode=json"
 ASHBY_URL = "https://api.ashbyhq.com/posting-api/job-board/{name}?includeCompensation=true"
+WORKABLE_URL = "https://www.workable.com/api/accounts/{sub}?details=true"
+RECRUITEE_URL = "https://{sub}.recruitee.com/api/offers/"
 TIMEOUT = 15
-HEADERS = {"User-Agent": "pm-jobs-board-mvp/0.2 (personal project)"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 # ---------------------------------------------------------------------------
 # 2. PM title filter + level classifier
@@ -104,6 +141,34 @@ def classify_level(title: str) -> str:
         if pattern.search(title):
             return label
     return "PM"
+
+
+def tag_keywords(j: dict) -> list:
+    """Find matches of KEYWORD_HIGHLIGHTER in title and description."""
+    tags = []
+    for kw in KEYWORD_HIGHLIGHTER:
+        text = (j.get("title", "") + " " + j.get("description", "")).lower()
+        if kw.lower() in text:
+            tags.append(kw)
+            break  # only tag once per keyword per job
+    return tags
+
+
+def has_days_open(j: dict) -> int:
+    """Days between posted_at and now. Returns -1 if no posted date."""
+    if not j.get("posted"):
+        return -1
+    try:
+        posted_str = j["posted"].replace("Z", "+00:00")
+        posted_dt = datetime.fromisoformat(posted_str)
+        # Ensure both datetimes are timezone-aware
+        if posted_dt.tzinfo is None:
+            posted_dt = posted_dt.replace(tzinfo=timezone.utc)
+        now_dt = datetime.now(timezone.utc)
+        days = (now_dt - posted_dt).days
+        return max(0, days)
+    except (ValueError, AttributeError, TypeError):
+        return -1
 
 
 def is_pm_role(title: str) -> bool:
@@ -173,6 +238,7 @@ def fetch_greenhouse(token: str):
             "level": classify_level(title),
             "posted": posted,
             "url": j.get("absolute_url", ""),
+            "description": html_mod.unescape((j.get("content") or "")[:500]),  # first 500 chars
             "source": "greenhouse",
         })
     return jobs
@@ -215,6 +281,7 @@ def fetch_lever(site: str):
             "level": classify_level(title),
             "posted": posted,
             "url": p.get("hostedUrl", ""),
+            "description": (p.get("text", "")[:500] if isinstance(p.get("text"), str) else ""),
             "source": "lever",
         })
     return jobs
@@ -243,7 +310,62 @@ def fetch_ashby(name: str):
             "level": classify_level(title),
             "posted": j.get("publishedAt") or "",
             "url": j.get("jobUrl") or j.get("applyUrl") or "",
+            "description": (j.get("descriptionRaw") or "")[:500] if isinstance(j.get("descriptionRaw"), str) else "",
             "source": "ashby",
+        })
+    return jobs
+
+
+def fetch_workable(sub: str):
+    """Workable public careers API. Fields beyond the documented ones
+    (title/url/location/department/employment_type) are mapped defensively."""
+    data = _get_json(WORKABLE_URL.format(sub=sub))
+    company = (data.get("name") or sub).strip()
+    jobs = []
+    for j in (data.get("jobs") or []):
+        title = j.get("title", "") or ""
+        if not is_pm_role(title):
+            continue
+        loc = j.get("location")
+        if isinstance(loc, dict):
+            loc = ", ".join(str(v) for v in (loc.get("city"), loc.get("country")) if v)
+        loc = (loc or "").strip() if isinstance(loc, str) else ""
+        jobs.append({
+            "title": title.strip(),
+            "company": company,
+            "location": loc,
+            "remote": bool(j.get("remote")) or "remote" in loc.lower(),
+            "salary": "",
+            "level": classify_level(title),
+            "posted": j.get("published_on") or j.get("created_at") or "",
+            "url": j.get("url", ""),
+            "description": (j.get("description", "")[:500] if isinstance(j.get("description"), str) else ""),
+            "source": "workable",
+        })
+    return jobs
+
+
+def fetch_recruitee(sub: str):
+    """Recruitee public offers API (documented fields: title, location,
+    department, careers_url, remote)."""
+    data = _get_json(RECRUITEE_URL.format(sub=sub))
+    jobs = []
+    for j in (data.get("offers") or []):
+        title = j.get("title", "") or ""
+        if not is_pm_role(title):
+            continue
+        loc = (j.get("location") or "").strip()
+        jobs.append({
+            "title": title.strip(),
+            "company": (j.get("company_name") or sub).strip(),
+            "location": loc,
+            "remote": bool(j.get("remote")) or "remote" in loc.lower(),
+            "salary": "",
+            "level": classify_level(title),
+            "posted": j.get("published_at") or j.get("created_at") or "",
+            "url": j.get("careers_url", ""),
+            "description": (j.get("description", "")[:500] if isinstance(j.get("description"), str) else ""),
+            "source": "recruitee",
         })
     return jobs
 
@@ -256,6 +378,8 @@ def run():
     plan = [("greenhouse", t, fetch_greenhouse) for t in SEED_COMPANIES["greenhouse"]]
     plan += [("lever", s, fetch_lever) for s in SEED_COMPANIES["lever"]]
     plan += [("ashby", a, fetch_ashby) for a in SEED_COMPANIES.get("ashby", [])]
+    plan += [("workable", w, fetch_workable) for w in SEED_COMPANIES.get("workable", [])]
+    plan += [("recruitee", r, fetch_recruitee) for r in SEED_COMPANIES.get("recruitee", [])]
 
     for source, token, fn in plan:
         jobs, err = None, None
@@ -280,25 +404,43 @@ def run():
             print(f"  FAIL  {source:<10} {token:<14} {err}")
         time.sleep(0.4)  # be polite
 
-    # de-dupe on (company, title, location)
+    # de-dupe on (company, title) only — catches near-dupes across ATS where
+    # location might be "San Francisco" vs "SF"
     seen, deduped = set(), []
     for j in all_jobs:
-        key = (j["company"].lower(), j["title"].lower(), j["location"].lower())
+        key = (j["company"].lower(), j["title"].lower())
         if key not in seen:
             seen.add(key)
+            # add new fields
+            j["days_open"] = has_days_open(j)
+            j["keywords"] = tag_keywords(j)
+            j["size"] = COMPANY_SIZES.get(j["company"].lower(), "Unknown")
+            # truncate description to first 200 chars for tooltip
+            desc = j.get("description") or ""
+            if isinstance(desc, str):
+                j["description_preview"] = (desc[:200] + "…") if len(desc) > 200 else desc
+            else:
+                j["description_preview"] = ""
             deduped.append(j)
 
-    # tag priority roles
-    kws = [k.lower() for k in PRIORITY_KEYWORDS]
-    for j in deduped:
-        j["priority"] = any(k in j["title"].lower() for k in kws)
+    # sort by: keywords match first, then recency
+    deduped.sort(key=lambda j: (len(j.get("keywords", [])) == 0, j["posted"] or ""), reverse=True)
 
-    deduped.sort(key=lambda j: j["posted"] or "", reverse=True)
+    # track company open role counts for the trending widget
+    company_counts = {}
+    for j in deduped:
+        co = j["company"]
+        company_counts[co] = company_counts.get(co, 0) + 1
+    
+    # top 5 trending companies by open role count
+    trending = sorted(company_counts.items(), key=lambda x: -x[1])[:5]
 
     out = Path(__file__).resolve().parent / "dist"
     out.mkdir(exist_ok=True)
     (out / "jobs.json").write_text(json.dumps(deduped, indent=2), encoding="utf-8")
-    (out / "index.html").write_text(render_html(deduped), encoding="utf-8")
+    (out / "index.html").write_text(
+        render_html(deduped, trending, company_counts), encoding="utf-8"
+    )
 
     print("\n----------------------------------------")
     print(f"boards resolved : {len(ok)} / {len(plan)}")
@@ -312,11 +454,13 @@ def run():
 # ---------------------------------------------------------------------------
 # 6. Static site template (data embedded — works from file:// or Pages)
 # ---------------------------------------------------------------------------
-def render_html(jobs) -> str:
+def render_html(jobs, trending, company_counts) -> str:
     now_utc = datetime.now(timezone.utc)
     generated = now_utc.strftime("%Y-%m-%d %H:%M UTC")
+    generated_iso = now_utc.isoformat()
     payload = json.dumps(jobs).replace("</", "<\\/")
-    template = """<!DOCTYPE html>
+    trending_payload = json.dumps(trending).replace("</", "<\\/")
+    template = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -369,8 +513,18 @@ def render_html(jobs) -> str:
   .badge.level{color:var(--accent); border-color:var(--accent)}
   .badge.remote{color:var(--fresh); border-color:var(--fresh)}
   .badge.new{color:var(--paper); background:var(--fresh); border-color:var(--fresh); font-weight:700}
-  .badge.pri{color:var(--star); border-color:var(--star)}
+  .badge.key{color:var(--star); border-color:var(--star); font-weight:600}
   .salary{font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace; color:var(--ink)}
+  .trending{margin:12px 0; padding:14px; background:var(--card); border:1px solid var(--line);
+            border-radius:8px; font-size:13px}
+  .stat-card{display:flex; gap:16px; flex-direction:column}
+  .stat-title{font-weight:700; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.05em}
+  .stat-rows{display:grid; gap:6px}
+  .stat-row{display:flex; justify-content:space-between; padding:4px 0;
+            border-bottom:1px solid var(--line)}
+  .stat-row:last-child{border:none}
+  .stat-row .co{font-weight:600; flex:1}
+  .stat-row .cnt{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-weight:700; color:var(--fresh)}
   button.act{background:none; border:1px solid var(--line); border-radius:6px;
              color:var(--dim); cursor:pointer; font-size:14px; line-height:1;
              padding:4px 8px}
@@ -383,7 +537,7 @@ def render_html(jobs) -> str:
 <div class="wrap">
   <header>
     <h1>PM Market <span class="tick">▲</span></h1>
-    <div class="meta">generated __GENERATED__ · refreshes daily ~7:00 AM PT · greenhouse + lever + ashby public APIs</div>
+    <div class="meta">updated <span id="genTime" data-iso="__GENERATED_ISO__">__GENERATED__</span> · refreshes daily ~7:00 AM PT · greenhouse + lever + ashby public APIs</div>
     <div class="tape">
       <div class="up"><b id="statFresh">0</b>new in 24h</div>
       <div><b id="statTotal">0</b>open roles</div>
@@ -401,17 +555,21 @@ def render_html(jobs) -> str:
       <option value="hidden">Hidden</option>
     </select>
     <select id="level" aria-label="Level"><option value="">All levels</option></select>
-    <select id="remote" aria-label="Work mode">
+    <select id="remote" aria-label="Workplace">
       <option value="">Any</option><option value="1">Remote</option><option value="0">On-site / hybrid</option>
     </select>
     <select id="source" aria-label="Source"><option value="">All sources</option></select>
+    <select id="size" aria-label="Company size"><option value="">All sizes</option></select>
+    <input id="salMin" type="number" placeholder="Min $" min="0" step="5000" aria-label="Minimum salary">
+    <input id="salMax" type="number" placeholder="Max $" min="0" step="5000" aria-label="Maximum salary">
   </div>
+  <div id="trending" class="trending"></div>
   <div id="list"></div>
 </div>
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
-const els = { q:q, view:view, level:level, remote:remote, source:source, list:list };
+const els = { q:q, view:view, level:level, remote:remote, source:source, size:size, salMin:salMin, salMax:salMax, list:list, trending:trending };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();
 
@@ -444,37 +602,62 @@ function fill(sel, values){
 }
 fill(els.level, JOBS.map(j=>j.level));
 fill(els.source, JOBS.map(j=>j.source));
+fill(els.size, JOBS.map(j=>j.size));
+
+/* --- render trending companies widget --- */
+const TRENDING = __TRENDING__;
+if(TRENDING.length > 0){
+  const html = '<div class="stat-card"><div class="stat-title">Trending</div><div class="stat-rows">' +
+    TRENDING.map(([co, cnt]) => `<div class="stat-row"><span class="co">${esc(co)}</span><span class="cnt">${cnt}</span></div>`).join('') +
+    '</div></div>';
+  els.trending.innerHTML = html;
+}
 
 function render(){
   const q = els.q.value.toLowerCase().trim();
   const mode = els.view.value;
+  const salMin = els.salMin.value ? parseInt(els.salMin.value) : 0;
+  const salMax = els.salMax.value ? parseInt(els.salMax.value) : Infinity;
+  
   let rows = JOBS.map((j,i)=>({j,i})).filter(({j}) => {
     if(mode === 'hidden') { if(!hidden.has(j.url)) return false; }
     else if(hidden.has(j.url)) return false;
     if(mode === 'saved'    && !saved.has(j.url)) return false;
-    if(mode === 'priority' && !j.priority) return false;
+    if(mode === 'priority' && (j.keywords||[]).length === 0) return false;
     if(mode === 'new'      && !isNew(j)) return false;
     if(q && !(j.title + ' ' + j.company + ' ' + j.location).toLowerCase().includes(q)) return false;
     if(els.level.value && j.level !== els.level.value) return false;
     if(els.remote.value !== '' && String(+j.remote) !== els.remote.value) return false;
     if(els.source.value && j.source !== els.source.value) return false;
+    if(els.size.value && j.size !== els.size.value) return false;
+    // salary filter: parse "$X–$Y" format
+    if(j.salary && (salMin > 0 || salMax < Infinity)){
+      const m = j.salary.match(/\$(\d+,?\d*)/g);
+      if(m && m.length >= 1){
+        const lo = parseInt(m[0].replace(/[\$,]/g,''));
+        if(lo < salMin || lo > salMax) return false;
+      } else return false;
+    }
     return true;
   });
-  rows.sort((a,b) => (b.j.priority - a.j.priority)
+  rows.sort((a,b) => ((b.j.keywords||[]).length - (a.j.keywords||[]).length)
     || ((Date.parse(b.j.posted)||0) - (Date.parse(a.j.posted)||0)));
   els.list.innerHTML = rows.length ? rows.map(({j,i}) => {
     const a = age(j.posted);
     const starred = saved.has(j.url);
-    return `<div class="job ${j.priority?'priority':''}">
-      <span class="when ${a.fresh?'fresh':''}">${a.fresh?'● ':''}${a.label}</span>
+    const daysOpen = j.days_open >= 0 ? j.days_open : -1;
+    const isStale = daysOpen >= 90;
+    const kwBadges = (j.keywords||[]).map(k => `<span class="badge key">${esc(k)}</span>`).join('');
+    return `<div class="job ${(j.keywords||[]).length > 0?'has-keywords':''}">
+      <span class="when ${a.fresh?'fresh':''}" title="${daysOpen >= 0 ? daysOpen + ' days open' : 'date unknown'}">${a.fresh?'● ':''}${a.label}${isStale?' ⚠':''}}</span>
       <span class="main">
-        <a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>
+        <a href="${esc(j.url)}" target="_blank" rel="noopener" title="${esc(j.description_preview)}">${esc(j.title)}</a>
         ${isNew(j)?'<span class="badge new">new</span>':''}
-        <div class="sub">${esc(j.company)}${j.location? ' · ' + esc(j.location):''}
+        <div class="sub">${esc(j.company)}${j.location? ' · ' + esc(j.location):''}${j.size && j.size !== 'Unknown' ? ' · ' + esc(j.size) + ' employees' : ''}
           ${j.salary? ' · <span class=salary>' + esc(j.salary) + '</span>':''}</div>
       </span>
       <span class="badges">
-        ${j.priority? '<span class="badge pri">priority</span>':''}
+        ${kwBadges}
         <span class="badge level">${esc(j.level)}</span>
         ${j.remote? '<span class="badge remote">remote</span>':''}
         <span class="badge">${esc(j.source)}</span>
@@ -522,10 +705,22 @@ function tickCountdown(){
 tickCountdown();
 setInterval(tickCountdown, 1000);
 
+/* --- localized "updated" timestamp --- */
+(function(){
+  const el = document.getElementById('genTime');
+  const d = new Date(el.dataset.iso);
+  if(!isNaN(d)){
+    const mins = Math.max(0, Math.round((Date.now() - d.getTime())/6e4));
+    const agoTxt = mins < 60 ? mins + 'm ago' : Math.round(mins/60) + 'h ago';
+    el.textContent = d.toLocaleString(undefined,
+      {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) + ' (' + agoTxt + ')';
+  }
+})();
+
 /* --- header stats --- */
 statTotal.textContent = JOBS.filter(j=>!hidden.has(j.url)).length;
 statFresh.textContent = JOBS.filter(j=>age(j.posted).fresh && !hidden.has(j.url)).length;
-[els.q, els.view, els.level, els.remote, els.source].forEach(el => el.addEventListener('input', render));
+[els.q, els.view, els.level, els.remote, els.source, els.size, els.salMin, els.salMax].forEach(el => el.addEventListener('input', render));
 render();
 </script>
 </body>
@@ -533,7 +728,9 @@ render();
     return (template
             .replace("__COUNT__", str(len(jobs)))
             .replace("__GENERATED__", html_mod.escape(generated))
+            .replace("__GENERATED_ISO__", html_mod.escape(generated_iso))
             .replace("__REFRESH_HOUR__", str(REFRESH_HOUR_PT))
+            .replace("__TRENDING__", trending_payload)
             .replace("__PAYLOAD__", payload))
 
 

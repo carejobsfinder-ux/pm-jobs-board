@@ -870,25 +870,27 @@ def render_html(jobs, trending, company_counts) -> str:
                border:1px solid var(--line); border-radius:6px; padding:8px 10px}
   input:focus,select:focus,button.act:focus{outline:2px solid var(--fresh); outline-offset:1px}
   #q{flex:1; min-width:150px}
-  .job{display:flex; gap:12px; align-items:baseline; padding:14px 4px;
+  .job{display:flex; gap:12px; align-items:baseline; padding:20px 12px;
        border-bottom:1px solid var(--line); flex-wrap:wrap}
-  .job.priority{background:color-mix(in srgb, var(--fresh) 6%, transparent)}
+  .job:nth-child(even){background:color-mix(in srgb, var(--fresh) 3%, transparent)}
+  .job:hover{background:color-mix(in srgb, var(--fresh) 8%, transparent)}
+  .job.priority{background:color-mix(in srgb, var(--fresh) 8%, transparent)}
   .job .when{width:64px; flex-shrink:0; color:var(--dim);
-             font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace}
+             font:11px "SF Mono",ui-monospace,Menlo,Consolas,monospace}
   .job .when.fresh{color:var(--fresh); font-weight:700}
   .job .main{flex:1; min-width:220px}
-  .job a{color:var(--ink); text-decoration:none; font-weight:600}
-  .job a:hover{text-decoration:underline; text-underline-offset:3px}
-  .sub{color:var(--dim); font-size:13px; margin-top:2px}
-  .badges{display:flex; gap:6px; flex-shrink:0; align-items:center}
-  .badge{font:11px "SF Mono",ui-monospace,Menlo,Consolas,monospace;
-         border:1px solid var(--line); border-radius:999px; padding:2px 9px;
+  .job a{color:var(--ink); text-decoration:none; font-weight:700; font-size:16px; line-height:1.4}
+  .job a:hover{text-decoration:underline; text-underline-offset:4px}
+  .sub{color:var(--dim); font-size:12px; margin-top:4px; display:flex; gap:12px; flex-wrap:wrap}
+  .badges{display:flex; gap:8px; flex-shrink:0; align-items:center; flex-wrap:wrap}
+  .badge{font:10px "SF Mono",ui-monospace,Menlo,Consolas,monospace;
+         border:1px solid var(--line); border-radius:999px; padding:3px 10px;
          color:var(--dim); white-space:nowrap}
-  .badge.level{color:var(--accent); border-color:var(--accent)}
-  .badge.remote{color:var(--fresh); border-color:var(--fresh)}
+  .badge.level{color:var(--accent); border-color:var(--accent); font-weight:600}
+  .badge.remote{color:var(--fresh); border-color:var(--fresh); font-weight:600}
   .badge.new{color:var(--paper); background:var(--fresh); border-color:var(--fresh); font-weight:700}
-  .badge.key{color:var(--star); border-color:var(--star); font-weight:600}
-  .salary{font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace; color:var(--ink)}
+  .badge.key{color:var(--star); background:color-mix(in srgb, var(--star) 12%, transparent); border-color:var(--star); font-weight:700}
+  .salary{font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace; color:var(--ink); font-weight:600}
   .trending{margin:12px 0; padding:14px; background:var(--card); border:1px solid var(--line);
             border-radius:8px; font-size:13px}
   .stat-card{display:flex; gap:16px; flex-direction:column}

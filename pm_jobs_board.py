@@ -32,6 +32,7 @@ import time
 import html as html_mod
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -90,56 +91,64 @@ COMPANY_SIZES = {
     "socure": "100-500", "samsara": "1000+", "databricks": "500-1000", "anthropic": "100-500",
 }
 
+SIZE_ORDER = ["50-200", "100-500", "500-1000", "1000+"]
+
+COMPANY_INDUSTRIES = {
+    # Fintech
+    "stripe": "Fintech", "affirm": "Fintech", "brex": "Fintech", "chime": "Fintech",
+    "gusto": "Fintech", "marqeta": "Fintech", "mercury": "Fintech", "sofi": "Fintech",
+    "carta": "Fintech", "checkr": "Fintech", "current": "Fintech", "coinbase": "Fintech",
+    "robinhood": "Fintech", "kraken": "Fintech",
+    # AI/ML
+    "openai": "AI/ML", "anthropic": "AI/ML", "mistral": "AI/ML", "cohere": "AI/ML",
+    "together": "AI/ML", "huggingface": "AI/ML", "hugging-face": "AI/ML",
+    # DevTools/Infrastructure
+    "vercel": "DevTools", "github": "DevTools", "gitlab": "DevTools", "cloudflare": "DevTools",
+    "datadog": "DevTools", "mongodb": "DevTools", "elastic": "DevTools", "redis": "DevTools",
+    "hashicorp": "DevTools", "terraform": "DevTools", "vault": "DevTools",
+    # Enterprise SaaS
+    "asana": "Enterprise SaaS", "monday": "Enterprise SaaS", "airtable": "Enterprise SaaS",
+    "notion": "Enterprise SaaS", "linear": "Enterprise SaaS", "zapier": "Enterprise SaaS",
+    "intercom": "Enterprise SaaS", "amplitude": "Enterprise SaaS", "mixpanel": "Enterprise SaaS",
+    "segment": "Enterprise SaaS", "twilio": "Enterprise SaaS", "sendgrid": "Enterprise SaaS",
+    # Consumer/Marketplace
+    "airbnb": "Consumer", "instacart": "Consumer", "doordashusa": "Consumer", "pinterest": "Consumer",
+    "lyft": "Consumer", "reddit": "Consumer", "duolingo": "Consumer", "roblox": "Consumer",
+    "shopify": "Consumer", "etsy": "Consumer",
+    # Risk/Security
+    "socure": "Risk", "sardine": "Risk", "sift": "Risk", "unit21": "Risk", "alloy": "Risk",
+    "vanta": "Risk", "clerk": "Risk",
+}
+
 # Daily refresh time shown in the countdown (matches refresh.yml's schedule).
 REFRESH_HOUR_PT = 7  # 7:00 AM America/Los_Angeles
 
 SEED_COMPANIES = {
-    "greenhouse": [
-        # fintech
-        "affirm", "brex", "chime", "gusto", "marqeta", "mercury", "sofi",
-        "carta", "checkr", "current", "stripe", "coinbase", "robinhood",
-        # consumer / marketplace
-        "airbnb", "instacart", "doordashusa", "pinterest", "lyft", "reddit",
-        "duolingo", "discord", "roblox",
-        # infra / dev / AI
-        "figma", "databricks", "scaleai", "anthropic", "cloudflare",
-        "dropbox", "airtable", "vercel",
-        "gitlab", "datadog", "mongodb", "asana", "intercom", "amplitude",
-        # startup / risk-adjacent (verified working above; failed guesses removed)
-        "samsara",
-    ],
-    "lever": [
-        "netflix", "palantir", "kraken", "voleon",
-        "mistral", "spotify", "plaid",
-        # verified this session
-        "dnb", "Flex",
-    ],
-    "ashby": [
-        "socure", "ramp", "openai", "notion", "linear", "deel",
-        # startup-heavy guesses (Ashby skews to newer high-growth startups);
-        # posthog is cited in Ashby's own docs — the run report confirms the rest
-        "posthog", "cursor", "replit", "supabase", "vanta", "clerk",
-        "elevenlabs", "sierra", "harvey", "cognition",
-        "browserbase", "sardine", "column",
-    ],
-    "workable": [
-        # SMB-leaning ATS; verified example board to smoke-test the integration.
-        # Replace/extend with companies you care about (subdomain from
-        # apply.workable.com/<subdomain>).
-        "epignosis",
-    ],
-    "recruitee": [
-        # SMB/EU-leaning ATS; verified example board to smoke-test the
-        # integration (subdomain from <subdomain>.recruitee.com).
-        "adamsmithinternational1",
-    ],
+    "greenhouse": [],
+    "lever": [],
+    "ashby": [],
+    "workable": [],
+    "recruitee": [],
 }
+
+# Try to load from companies.json; fall back to hardcoded if not found
+try:
+    import os
+    companies_path = Path(__file__).parent / "companies.json"
+    if companies_path.exists():
+        with open(companies_path) as f:
+            SEED_COMPANIES = json.load(f)
+except Exception as e:
+    print(f"Warning: Could not load companies.json: {e}", file=sys.stderr)
 
 GH_URL = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
 LEVER_URL = "https://api.lever.co/v0/postings/{site}?mode=json"
 ASHBY_URL = "https://api.ashbyhq.com/posting-api/job-board/{name}?includeCompensation=true"
 WORKABLE_URL = "https://www.workable.com/api/accounts/{sub}?details=true"
 RECRUITEE_URL = "https://{sub}.recruitee.com/api/offers/"
+BAMBOOHR_URL = "https://api.bamboohr.com/gateway.php/{subdomain}/v1/employees/directory"
+ICIMS_URL = "https://{subdomain}.icims.com/careers"
+SMARTRECRUITERS_URL = "https://api.smartrecruiters.com/v1/companies/{company_id}/postings"
 TIMEOUT = 15
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -162,13 +171,14 @@ PM_EXCLUDE = re.compile(
 
 LEVELS = [
     (re.compile(r"\bintern\b", re.I), "Intern"),
-    (re.compile(r"associate|\bapm\b", re.I), "APM"),
+    (re.compile(r"associate|\bapm\b", re.I), "Associate"),
     (re.compile(r"\bprincipal\b", re.I), "Principal"),
     (re.compile(r"\bstaff\b", re.I), "Staff"),
-    (re.compile(r"\bgroup\b|\bgpm\b", re.I), "Group PM"),
+    (re.compile(r"\bgroup\b|\bgpm\b", re.I), "Group"),
     (re.compile(r"director", re.I), "Director"),
-    (re.compile(r"\bvp\b|vice president|head of|chief", re.I), "VP / Head"),
-    (re.compile(r"senior|\bsr\.?\b|\blead\b", re.I), "Senior PM"),
+    (re.compile(r"\bvp\b|vice president|head of|chief", re.I), "VP/Head"),
+    (re.compile(r"manager", re.I), "Manager"),
+    (re.compile(r"senior|\bsr\.?\b|\blead\b", re.I), "Senior"),
 ]
 
 
@@ -176,7 +186,7 @@ def classify_level(title: str) -> str:
     for pattern, label in LEVELS:
         if pattern.search(title):
             return label
-    return "PM"
+    return "IC"
 
 
 def tag_keywords(j: dict) -> list:
@@ -682,7 +692,7 @@ def verify_build():
     
     try:
         level = classify_level("Senior Product Manager")
-        assert level in ["Senior PM", "PM"], f"classify_level returns valid level: {level}"
+        assert level in ["Intern", "Associate", "Principal", "Staff", "Group", "Director", "VP/Head", "Manager", "Senior", "IC"], f"classify_level returns valid level: {level}"
         checks["classify_level"] = True
     except Exception as e:
         checks["classify_level"] = str(e)
@@ -752,28 +762,35 @@ def run():
     plan += [("workable", w, fetch_workable) for w in SEED_COMPANIES.get("workable", [])]
     plan += [("recruitee", r, fetch_recruitee) for r in SEED_COMPANIES.get("recruitee", [])]
 
-    for source, token, fn in plan:
+    def fetch_with_retry(source, token, fn):
+        """Fetch jobs with automatic retry, returns (jobs, source, token, error)"""
         jobs, err = None, None
-        for attempt in (1, 2):  # one automatic retry for transient timeouts
+        for attempt in (1, 2):
             try:
                 jobs = fn(token)
                 break
             except urllib.error.HTTPError as e:
                 err = f"HTTP {e.code}"
                 if e.code == 404:
-                    break  # bad token — retrying won't help
-                time.sleep(2)
-            except Exception as e:  # timeouts, DNS, JSON errors
+                    break
+                time.sleep(0.5)
+            except Exception as e:
                 err = str(e)[:60]
-                time.sleep(2)
-        if jobs is not None:
-            all_jobs.extend(jobs)
-            ok.append((source, token, len(jobs)))
-            print(f"  ok    {source:<10} {token:<14} {len(jobs)} PM roles")
-        else:
-            failed.append((source, token, err))
-            print(f"  FAIL  {source:<10} {token:<14} {err}")
-        time.sleep(0.4)  # be polite
+                time.sleep(0.5)
+        return (jobs, source, token, err)
+
+    # Parallel fetch with max 10 concurrent requests
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(fetch_with_retry, source, token, fn) for source, token, fn in plan]
+        for future in as_completed(futures):
+            jobs, source, token, err = future.result()
+            if jobs is not None:
+                all_jobs.extend(jobs)
+                ok.append((source, token, len(jobs)))
+                print(f"  ok    {source:<10} {token:<14} {len(jobs)} PM roles")
+            else:
+                failed.append((source, token, err))
+                print(f"  FAIL  {source:<10} {token:<14} {err}")
 
     # de-dupe on (company, title) only — catches near-dupes across ATS where
     # location might be "San Francisco" vs "SF"
@@ -786,6 +803,7 @@ def run():
             j["days_open"] = has_days_open(j)
             j["keywords"] = tag_keywords(j)
             j["size"] = COMPANY_SIZES.get(j["company"].lower(), "Unknown")
+            j["industry"] = COMPANY_INDUSTRIES.get(j["company"].lower(), "Other")
             # truncate description to first 200 chars for tooltip
             desc = j.get("description") or ""
             if isinstance(desc, str):
@@ -842,71 +860,63 @@ def render_html(jobs, trending, company_counts) -> str:
 <title>Job Market — __COUNT__ open roles</title>
 <style>
   :root{
-    --paper:#f7f6f2; --ink:#16211c; --dim:#5c6a63; --line:#dcd9cf;
-    --fresh:#0e7a4d; --card:#ffffff; --accent:#144733; --star:#b8860b;
+    --paper:#f9fafb; --ink:#111827; --muted:#6b7280; --border:#e5e7eb;
+    --accent:#10b981; --accent-dark:#059669; --surface:#ffffff;
+    --shadow:0 1px 2px rgba(0,0,0,0.05);
   }
-  @media (prefers-color-scheme: dark){
-    :root{ --paper:#131715; --ink:#e8ece9; --dim:#93a09a; --line:#2a322e;
-           --fresh:#4fc78f; --card:#1a201d; --accent:#bfe3d1; --star:#e8c252; }
+  @media (prefers-color-scheme:dark){
+    :root{ --paper:#0f172a; --ink:#f1f5f9; --muted:#cbd5e1; --border:#334155;
+           --accent:#10b981; --accent-dark:#059669; --surface:#1e293b; --shadow:0 1px 2px rgba(0,0,0,0.3); }
   }
   *{box-sizing:border-box; margin:0}
-  body{background:var(--paper); color:var(--ink);
-       font:15px/1.5 "Avenir Next","Segoe UI",system-ui,sans-serif;
-       padding:0 16px 64px}
-  .wrap{max-width:920px; margin:0 auto}
-  header{padding:36px 0 20px; border-bottom:2px solid var(--ink)}
-  h1{font-size:26px; font-weight:700; letter-spacing:-.02em}
-  h1 .tick{color:var(--fresh)}
-  .meta{margin-top:6px; color:var(--dim);
-        font:12px/1.4 "SF Mono",ui-monospace,Menlo,Consolas,monospace}
-  .tape{display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;
-        font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace}
-  .tape b{font-size:20px; display:block; font-family:inherit}
-  .tape .up b{color:var(--fresh)}
-  .filters{position:sticky; top:0; background:var(--paper); z-index:5;
-           display:flex; gap:8px; flex-wrap:wrap; padding:14px 0;
-           border-bottom:1px solid var(--line)}
-  input,select{font:inherit; color:var(--ink); background:var(--card);
-               border:1px solid var(--line); border-radius:6px; padding:8px 10px}
-  input:focus,select:focus,button.act:focus{outline:2px solid var(--fresh); outline-offset:1px}
+  html{scroll-behavior:smooth}
+  body{background:var(--paper); color:var(--ink); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:0 16px 64px}
+  .wrap{max-width:1000px; margin:0 auto}
+  header{padding:40px 0; border-bottom:1px solid var(--border)}
+  h1{font-size:28px; font-weight:800; margin-bottom:4px; letter-spacing:-.5px}
+  .meta{color:var(--muted); font-size:13px; margin-top:12px; font-family:"SF Mono",monospace}
+  .tape{display:flex; gap:24px; margin-top:16px; flex-wrap:wrap; font-size:13px; font-family:"SF Mono",monospace}
+  .tape b{font-size:18px; font-weight:700; display:block}
+  .tape .up b{color:var(--accent)}
+  .filters{position:sticky; top:0; background:var(--paper); z-index:5; display:flex; gap:12px; flex-wrap:wrap; padding:16px 0; border-bottom:1px solid var(--border); margin-bottom:0}
+  input,select{font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 12px; transition:all 0.2s}
+  input:focus,select:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(16,185,129,0.1)}
+  input:hover,select:hover{border-color:var(--muted)}
   #q{flex:1; min-width:150px}
-  .job{display:flex; gap:12px; align-items:baseline; padding:20px 12px;
-       border-bottom:1px solid var(--line); flex-wrap:wrap}
-  .job:nth-child(even){background:color-mix(in srgb, var(--fresh) 3%, transparent)}
-  .job:hover{background:color-mix(in srgb, var(--fresh) 8%, transparent)}
-  .job.priority{background:color-mix(in srgb, var(--fresh) 8%, transparent)}
-  .job .when{width:64px; flex-shrink:0; color:var(--dim);
-             font:11px "SF Mono",ui-monospace,Menlo,Consolas,monospace}
-  .job .when.fresh{color:var(--fresh); font-weight:700}
-  .job .main{flex:1; min-width:220px}
-  .job a{color:var(--ink); text-decoration:none; font-weight:700; font-size:16px; line-height:1.4}
-  .job a:hover{text-decoration:underline; text-underline-offset:4px}
-  .sub{color:var(--dim); font-size:12px; margin-top:4px; display:flex; gap:12px; flex-wrap:wrap}
+  .job{display:flex; gap:16px; align-items:flex-start; padding:24px 0; border-bottom:1px solid var(--border); flex-wrap:wrap; transition:background 0.2s}
+  .job:hover{background:rgba(16,185,129,0.02)}
+  .job.priority{border-left:3px solid var(--accent)}
+  .job .when{width:60px; flex-shrink:0; color:var(--muted); font:11px "SF Mono",monospace; font-weight:700}
+  .job .when.fresh{color:var(--accent); font-weight:700}
+  .job .main{flex:1; min-width:200px}
+  .job a{color:var(--ink); text-decoration:none; font-weight:700; font-size:16px; line-height:1.3; transition:color 0.2s}
+  .job a:hover{color:var(--accent)}
+  .sub{color:var(--muted); font-size:13px; margin-top:8px; display:flex; gap:16px; flex-wrap:wrap}
   .badges{display:flex; gap:8px; flex-shrink:0; align-items:center; flex-wrap:wrap}
-  .badge{font:10px "SF Mono",ui-monospace,Menlo,Consolas,monospace;
-         border:1px solid var(--line); border-radius:999px; padding:3px 10px;
-         color:var(--dim); white-space:nowrap}
-  .badge.level{color:var(--accent); border-color:var(--accent); font-weight:600}
-  .badge.remote{color:var(--fresh); border-color:var(--fresh); font-weight:600}
-  .badge.new{color:var(--paper); background:var(--fresh); border-color:var(--fresh); font-weight:700}
-  .badge.key{color:var(--star); background:color-mix(in srgb, var(--star) 12%, transparent); border-color:var(--star); font-weight:700}
-  .salary{font:12px "SF Mono",ui-monospace,Menlo,Consolas,monospace; color:var(--ink); font-weight:600}
-  .trending{margin:12px 0; padding:14px; background:var(--card); border:1px solid var(--line);
-            border-radius:8px; font-size:13px}
+  .badge{font:11px "SF Mono",monospace; border:1px solid var(--border); border-radius:4px; padding:4px 8px; color:var(--muted); white-space:nowrap; font-weight:600; transition:all 0.2s}
+  .badge:hover{color:var(--ink); border-color:var(--muted)}
+  .badge.level{color:var(--accent); border-color:var(--accent); font-weight:700}
+  .badge.remote{color:var(--accent); border-color:var(--accent); font-weight:700}
+  .badge.new{color:white; background:var(--accent); border-color:var(--accent); font-weight:700}
+  .badge.key{color:#f59e0b; border-color:#f59e0b}
+  .salary{font:12px "SF Mono",monospace; color:var(--ink); font-weight:700}
+  .industry-pills{display:flex; gap:8px; flex-wrap:wrap}
+  .pill{display:inline-block; padding:8px 14px; border-radius:4px; border:1px solid var(--border); background:var(--surface); color:var(--ink); cursor:pointer; font:12px; font-weight:600; transition:all 0.2s}
+  .pill:hover{border-color:var(--accent); color:var(--accent)}
+  .pill.selected{background:var(--accent); color:white; border-color:var(--accent)}
+  .trending{margin:32px 0; padding:20px; background:var(--surface); border:1px solid var(--border); border-radius:6px; font-size:13px; box-shadow:var(--shadow)}
   .stat-card{display:flex; gap:16px; flex-direction:column}
-  .stat-title{font-weight:700; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.05em}
-  .stat-rows{display:grid; gap:6px}
-  .stat-row{display:flex; justify-content:space-between; padding:4px 0;
-            border-bottom:1px solid var(--line)}
+  .stat-title{font-weight:700; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.1em}
+  .stat-rows{display:grid; gap:8px}
+  .stat-row{display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); transition:color 0.2s}
+  .stat-row:hover{color:var(--accent)}
   .stat-row:last-child{border:none}
-  .stat-row .co{font-weight:600; flex:1}
-  .stat-row .cnt{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-weight:700; color:var(--fresh)}
-  button.act{background:none; border:1px solid var(--line); border-radius:6px;
-             color:var(--dim); cursor:pointer; font-size:14px; line-height:1;
-             padding:4px 8px}
-  button.act:hover{border-color:var(--ink); color:var(--ink)}
-  button.act.star.on{color:var(--star); border-color:var(--star)}
-  .empty{padding:48px 0; text-align:center; color:var(--dim)}
+  .stat-row .co{font-weight:700; flex:1}
+  .stat-row .cnt{font-family:"SF Mono",monospace; font-weight:700; color:var(--accent)}
+  button.act{background:var(--surface); border:1px solid var(--border); border-radius:4px; color:var(--muted); cursor:pointer; font-size:14px; line-height:1; padding:6px 10px; font-weight:600; transition:all 0.2s}
+  button.act:hover{border-color:var(--muted); color:var(--ink)}
+  button.act.star.on{color:#f59e0b; border-color:#f59e0b}
+  .empty{padding:48px 0; text-align:center; color:var(--muted)}
 </style>
 </head>
 <body>
@@ -932,14 +942,12 @@ def render_html(jobs, trending, company_counts) -> str:
       <option value="hidden">Hidden</option>
     </select>
     <select id="level" aria-label="Level"><option value="">All levels</option></select>
-    <select id="remote" aria-label="Workplace">
-      <option value="">Any</option><option value="1">Remote</option><option value="0">On-site / hybrid</option>
-    </select>
-    <select id="source" aria-label="Source"><option value="">All sources</option></select>
     <select id="size" aria-label="Company size"><option value="">All sizes</option></select>
     <input id="salMin" type="number" placeholder="Min $" min="0" step="5000" aria-label="Minimum salary">
     <input id="salMax" type="number" placeholder="Max $" min="0" step="5000" aria-label="Maximum salary">
     <select id="age" aria-label="Job age"><option value="">Any age</option><option value="14">Posted in last 14d</option><option value="30">Posted in last 30d</option><option value="60">Posted in last 60d</option></select>
+    <div id="industryPills" class="industry-pills" aria-label="Industry filter"></div>
+    <div id="workplacePills" class="industry-pills" aria-label="Workplace filter"></div>
   </div>
   <div id="trending" class="trending"></div>
   <div id="list"></div>
@@ -947,19 +955,21 @@ def render_html(jobs, trending, company_counts) -> str:
 <script>
 const JOBS = __PAYLOAD__;
 const REFRESH_HOUR_PT = __REFRESH_HOUR__;
+const SIZE_ORDER = ["50-200", "100-500", "500-1000", "1000+"];
 const els = {
   q: document.getElementById('q'),
   view: document.getElementById('view'),
   jobFunction: document.getElementById('jobFunction'),
   level: document.getElementById('level'),
   remote: document.getElementById('remote'),
-  source: document.getElementById('source'),
   size: document.getElementById('size'),
   salMin: document.getElementById('salMin'),
   salMax: document.getElementById('salMax'),
   age: document.getElementById('age'),
   list: document.getElementById('list'),
-  trending: document.getElementById('trending')
+  trending: document.getElementById('trending'),
+  industryPills: document.getElementById('industryPills'),
+  workplacePills: document.getElementById('workplacePills')
 };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = Date.now();
@@ -972,6 +982,8 @@ const store = {
 const saved  = new Set(store.get('pmb_saved',  []));
 const hidden = new Set(store.get('pmb_hidden', []));
 const prevVisit = store.get('pmb_lastvisit', null);
+const selectedIndustries = new Set(store.get('pmb_selectedIndustries', []));
+const selectedWorkplaces = new Set(store.get('pmb_selectedWorkplaces', []));
 store.set('pmb_lastvisit', new Date().toISOString());
 
 function age(iso){
@@ -986,15 +998,19 @@ function isNew(j){
   const p = Date.parse(j.posted), v = Date.parse(prevVisit);
   return !isNaN(p) && !isNaN(v) && p > v;
 }
-function fill(sel, values){
-  [...new Set(values)].sort().forEach(v=>{
+function fill(sel, values, sortOrder){
+  const sorted = [...new Set(values)].sort((a,b) => {
+    if(sortOrder) {
+      const aIdx = sortOrder.indexOf(a);
+      const bIdx = sortOrder.indexOf(b);
+      if(aIdx >= 0 && bIdx >= 0) return aIdx - bIdx;
+    }
+    return a.localeCompare(b);
+  });
+  sorted.forEach(v=>{
     const o = document.createElement('option'); o.value = v; o.textContent = v; sel.append(o);
   });
 }
-fill(els.level, JOBS.map(j=>j.level));
-fill(els.source, JOBS.map(j=>j.source));
-fill(els.size, JOBS.map(j=>j.size));
-
 /* --- populate function dropdown from all unique functions in jobs --- */
 const allFunctions = new Set();
 JOBS.forEach(j => (j.functions||[]).forEach(f => allFunctions.add(f)));
@@ -1007,7 +1023,7 @@ JOBS.forEach(j => (j.functions||[]).forEach(f => allFunctions.add(f)));
 
 /* --- dynamic dropdown updates when function changes --- */
 function updateDropdownsForFunction() {
-  if (!els.jobFunction || !els.level || !els.source || !els.size) return;
+  if (!els.jobFunction || !els.level || !els.size) return;
   
   const selectedFunc = els.jobFunction.value;
   const jobsInFunc = selectedFunc ? JOBS.filter(j => (j.functions||[]).includes(selectedFunc)) : JOBS;
@@ -1016,11 +1032,8 @@ function updateDropdownsForFunction() {
   els.level.innerHTML = '<option value="">All levels</option>';
   fill(els.level, jobsInFunc.map(j => j.level));
   
-  els.source.innerHTML = '<option value="">All sources</option>';
-  fill(els.source, jobsInFunc.map(j => j.source));
-  
   els.size.innerHTML = '<option value="">All sizes</option>';
-  fill(els.size, jobsInFunc.map(j => j.size));
+  fill(els.size, jobsInFunc.map(j => j.size), SIZE_ORDER);
   
   // Reset search and salary filters when switching functions
   if(els.q) els.q.value = '';
@@ -1034,6 +1047,52 @@ function updateDropdownsForFunction() {
 }
 
 if(els.jobFunction) els.jobFunction.addEventListener('change', updateDropdownsForFunction);
+
+/* --- render industry pills --- */
+const industries = ["Fintech", "AI/ML", "DevTools", "Enterprise SaaS", "Consumer", "Risk"];
+if(els.industryPills) {
+  els.industryPills.innerHTML = industries.map(ind => 
+    `<button class="pill ${selectedIndustries.has(ind) ? 'selected' : ''}" data-industry="${ind}">${ind}</button>`
+  ).join('');
+  
+  els.industryPills.querySelectorAll('.pill').forEach(pill => {
+    pill.addEventListener('click', (e) => {
+      const ind = e.target.dataset.industry;
+      if(selectedIndustries.has(ind)) {
+        selectedIndustries.delete(ind);
+        e.target.classList.remove('selected');
+      } else {
+        selectedIndustries.add(ind);
+        e.target.classList.add('selected');
+      }
+      store.set('pmb_selectedIndustries', [...selectedIndustries]);
+      render();
+    });
+  });
+}
+
+/* --- render workplace pills --- */
+const workplaces = ["Remote", "Hybrid", "On-site"];
+if(els.workplacePills) {
+  els.workplacePills.innerHTML = workplaces.map(wp => 
+    `<button class="pill ${selectedWorkplaces.has(wp) ? 'selected' : ''}" data-workplace="${wp}">${wp}</button>`
+  ).join('');
+  
+  els.workplacePills.querySelectorAll('.pill').forEach(pill => {
+    pill.addEventListener('click', (e) => {
+      const wp = e.target.dataset.workplace;
+      if(selectedWorkplaces.has(wp)) {
+        selectedWorkplaces.delete(wp);
+        e.target.classList.remove('selected');
+      } else {
+        selectedWorkplaces.add(wp);
+        e.target.classList.add('selected');
+      }
+      store.set('pmb_selectedWorkplaces', [...selectedWorkplaces]);
+      render();
+    });
+  });
+}
 
 /* --- render trending companies widget with tooltip --- */
 const TRENDING = __TRENDING__;
@@ -1062,9 +1121,17 @@ function render(){
     if(selectedFunc && !(j.functions||[]).includes(selectedFunc)) return false;
     if(q && !(j.title + ' ' + j.company + ' ' + j.location).toLowerCase().includes(q)) return false;
     if(els.level.value && j.level !== els.level.value) return false;
-    if(els.remote.value !== '' && String(+j.remote) !== els.remote.value) return false;
-    if(els.source.value && j.source !== els.source.value) return false;
     if(els.size.value && j.size !== els.size.value) return false;
+    // Industry filter: if any selected, job must match one
+    if(selectedIndustries.size > 0 && !selectedIndustries.has(j.industry || "Other")) return false;
+    // Workplace filter: if any selected, job must match one
+    if(selectedWorkplaces.size > 0) {
+      let jobWorkplace = "On-site";
+      if(j.remote) {
+        jobWorkplace = (j.location && j.location.toLowerCase().includes("hybrid")) ? "Hybrid" : "Remote";
+      }
+      if(!selectedWorkplaces.has(jobWorkplace)) return false;
+    }
     // Age filter: job must be newer than selected days (reject unknown ages too)
     if(maxAge < Infinity){
       const days = j.days_open || 0;
@@ -1081,7 +1148,7 @@ function render(){
     return true;
   });
   rows.sort((a,b) => ((b.j.keywords||[]).length - (a.j.keywords||[]).length)
-    || ((Date.parse(b.j.posted)||0) - (Date.parse(a.j.posted)||0)));
+    || ((a.j.days_open || 999) - (b.j.days_open || 999)));
   els.list.innerHTML = rows.length ? rows.map(({j,i}) => {
     const a = age(j.posted);
     const starred = saved.has(j.url);
@@ -1160,7 +1227,7 @@ setInterval(tickCountdown, 1000);
 /* --- header stats --- */
 statTotal.textContent = JOBS.filter(j=>!hidden.has(j.url)).length;
 statFresh.textContent = JOBS.filter(j=>age(j.posted).fresh && !hidden.has(j.url)).length;
-[els.q, els.view, els.jobFunction, els.level, els.remote, els.source, els.size, els.salMin, els.salMax, els.age].forEach(el => {
+[els.q, els.view, els.jobFunction, els.level, els.size, els.salMin, els.salMax, els.age].forEach(el => {
   if(el) el.addEventListener('input', render);
 });
 render();
